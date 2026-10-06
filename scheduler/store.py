@@ -170,6 +170,27 @@ class TaskStore:
                 self._rollback_safe()
                 raise
 
+    def renew_lease(self, task_id: str, owner: str, now: float,
+                    lease_seconds: float) -> bool:
+        """续约：仅当任务仍为 RUNNING 且持有者未变时延长租约。
+
+        不写入事件历史（续约是常规心跳，不是状态迁移）。
+        任务已被取消、接管或进入终态时返回 False，调用方必须中止执行。
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(
+                    "UPDATE tasks SET lease_expires_at=?"
+                    " WHERE task_id=? AND state='RUNNING' AND owner=?",
+                    (now + lease_seconds, task_id, owner),
+                )
+                self._conn.execute("COMMIT")
+                return cur.rowcount == 1
+            except Exception:
+                self._rollback_safe()
+                raise
+
     def complete(self, task_id: str, owner: str, result: object,
                  now: float) -> tuple[Task, TaskEvent]:
         with self._lock:

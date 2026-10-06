@@ -1,6 +1,7 @@
 """调度业务逻辑：幂等提交、领取、完成、失败重试、取消、查询。"""
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from typing import Any, Callable
@@ -10,6 +11,9 @@ from scheduler.errors import TaskNotFoundError
 from scheduler.models import Task, TaskEvent, TaskState
 from scheduler.store import TaskStore
 
+# 取消通知回调：任务被成功取消（PENDING/RUNNING -> CANCELLED）时调用
+CancelListener = Callable[[str], None]
+
 
 class SchedulerService:
     def __init__(self, config: SchedulerConfig,
@@ -17,6 +21,8 @@ class SchedulerService:
         self._config = config
         self._now = now_fn
         self._store = TaskStore(config.db_path)
+        self._cancel_listeners: list[CancelListener] = []
+        self._listeners_lock = threading.Lock()
 
     def close(self) -> None:
         self._store.close()
@@ -80,9 +86,30 @@ class SchedulerService:
                                       now + backoff, now)
         return updated
 
+    def renew_lease(self, task_id: str, owner: str) -> bool:
+        """执行期间续约；任务已不再属于该执行者（被取消/接管/终态）时返回 False。"""
+        return self._store.renew_lease(
+            task_id, owner, self._now(), self._config.lease_seconds)
+
     def cancel(self, task_id: str) -> Task:
         task, _ = self._store.cancel(task_id, self._now())
+        # 通知本进程内的执行引擎打断执行体
+        with self._listeners_lock:
+            listeners = list(self._cancel_listeners)
+        for listener in listeners:
+            listener(task_id)
         return task
+
+    def add_cancel_listener(self, listener: CancelListener) -> None:
+        with self._listeners_lock:
+            self._cancel_listeners.append(listener)
+
+    def remove_cancel_listener(self, listener: CancelListener) -> None:
+        with self._listeners_lock:
+            try:
+                self._cancel_listeners.remove(listener)
+            except ValueError:
+                pass
 
     def get(self, task_id: str, requester: str | None = None) -> Task:
         """查询任务；非当前持有者的调用方看不到 payload/result。"""
