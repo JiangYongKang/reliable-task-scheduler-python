@@ -17,7 +17,7 @@ from scheduler.errors import (
     SchedulerError,
     TaskNotFoundError,
 )
-from scheduler.models import Task, TaskState
+from scheduler.models import Task
 from scheduler.service import SchedulerService
 
 logger = logging.getLogger("scheduler.api")
@@ -42,6 +42,10 @@ class FailRequest(BaseModel):
 
 class CancelRequest(BaseModel):
     requester: str | None = None
+
+
+class RenewRequest(BaseModel):
+    owner: str = Field(min_length=1)
 
 
 def task_dict(task: Task) -> dict[str, Any]:
@@ -130,6 +134,17 @@ def create_router(service: SchedulerService) -> APIRouter:
             _http_error(err, "fail")
         logger.info("transition task=%s -> %s attempt=%s not_before=%s",
                     task_id, task.state.value, task.attempt, task.not_before)
+        return {"task": task_dict(task)}
+
+    @router.post("/{task_id}/renew")
+    def renew_task(task_id: str, body: RenewRequest):
+        logger.info("request POST /tasks/%s/renew owner=%s", task_id, body.owner)
+        try:
+            task = service.renew(task_id, body.owner)
+        except SchedulerError as err:
+            _http_error(err, "renew")
+        logger.info("renew task=%s lease_expires_at=%s",
+                    task_id, task.lease_expires_at)
         return {"task": task_dict(task)}
 
     @router.post("/{task_id}/cancel")

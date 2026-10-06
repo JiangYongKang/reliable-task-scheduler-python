@@ -92,3 +92,30 @@ def test_redaction_and_claim_empty_api(client):
     other = client.get(f"/tasks/{tid}?requester=owner-b").json()["task"]
     assert other["payload"] == {} and other["result"] is None
     print("api redacted payload for unrelated requester")
+
+
+def test_renew_endpoint_extends_lease_and_rejects_stale_owner(client):
+    client.post("/tasks", json={"idempotency_key": "rn1", "payload": {}})
+    claimed = client.post("/tasks/claim", params={"worker_id": "w1"}).json()["task"]
+    tid = claimed["task_id"]
+    old_expiry = claimed["lease_expires_at"]
+    print("input POST /tasks/%s/renew owner=w1" % tid)
+
+    r = client.post(f"/tasks/{tid}/renew", json={"owner": "w1"})
+    assert r.status_code == 200
+    new_expiry = r.json()["task"]["lease_expires_at"]
+    print("renew ok lease_expires_at %s -> %s" % (old_expiry, new_expiry))
+    assert new_expiry >= old_expiry
+
+    # 非持有者续约被拒：409 lease_conflict
+    r2 = client.post(f"/tasks/{tid}/renew", json={"owner": "w2"})
+    assert r2.status_code == 409
+    assert r2.json()["detail"]["reason"] == "lease_conflict"
+    print("reject renew by w2 reason=%s" % r2.json()["detail"]["reason"])
+
+    # 已取消任务续约被拒：409 invalid_state_transition
+    client.post(f"/tasks/{tid}/cancel")
+    r3 = client.post(f"/tasks/{tid}/renew", json={"owner": "w1"})
+    assert r3.status_code == 409
+    assert r3.json()["detail"]["reason"] == "invalid_state_transition"
+    print("reject renew after cancel reason=%s" % r3.json()["detail"]["reason"])

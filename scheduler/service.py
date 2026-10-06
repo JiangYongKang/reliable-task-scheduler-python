@@ -80,6 +80,11 @@ class SchedulerService:
                                       now + backoff, now)
         return updated
 
+    def renew(self, task_id: str, owner: str) -> Task:
+        """执行者续约租约；任务被取消或易主时抛出异常，作为中断信号。"""
+        return self._store.renew(task_id, owner, self._now(),
+                                 self._config.lease_seconds)
+
     def cancel(self, task_id: str) -> Task:
         task, _ = self._store.cancel(task_id, self._now())
         return task

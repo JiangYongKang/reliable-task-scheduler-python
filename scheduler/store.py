@@ -249,6 +249,38 @@ class TaskStore:
             self._rollback_safe()
             raise
 
+    def renew(self, task_id: str, owner: str, now: float,
+              lease_seconds: float) -> Task:
+        """持有者为 RUNNING 任务续约租约；任务已易主或已终态时拒绝。
+
+        续约失败是执行者感知“被取消/被接管”的信号。
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                task = self._get_locked(task_id)
+                if task is None:
+                    raise TaskNotFoundError(task_id)
+                if task.state != TaskState.RUNNING:
+                    raise InvalidStateTransitionError(
+                        task_id, task.state.value, "renew")
+                if task.owner != owner:
+                    raise LeaseConflictError(
+                        f"task {task_id} owned by {task.owner!r}, not {owner!r}")
+                new_expiry = now + lease_seconds
+                self._conn.execute(
+                    "UPDATE tasks SET lease_expires_at=?, updated_at=?"
+                    " WHERE task_id=?",
+                    (new_expiry, now, task_id),
+                )
+                self._conn.execute("COMMIT")
+                updated = self.get_task(task_id)
+                assert updated is not None
+                return updated
+            except Exception:
+                self._rollback_safe()
+                raise
+
     def cancel(self, task_id: str, now: float) -> tuple[Task, TaskEvent]:
         """取消 PENDING/RUNNING 任务；终态或未知任务被拒绝。"""
         with self._lock:

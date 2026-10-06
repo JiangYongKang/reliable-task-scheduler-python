@@ -19,6 +19,7 @@ logging.basicConfig(
     force=True,
 )
 logging.getLogger("scheduler.api").setLevel(logging.DEBUG)
+logging.getLogger("scheduler.executor").setLevel(logging.DEBUG)
 
 
 class FakeClock:
